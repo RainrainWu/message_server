@@ -19,7 +19,7 @@ func main() {
 	flag.Parse()
 	log.SetFlags(0)
 
-	u := url.URL{Scheme: "ws", Host: *addr, Path: "/echo"}
+	u := url.URL{Scheme: "ws", Host: *addr, Path: "/chat_0"}
 	log.Printf("connecting to %s", u.String())
 
 	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
@@ -28,19 +28,8 @@ func main() {
 	}
 	defer c.Close()
 
-
-	go func() {
-		for {
-			_, _, err := c.ReadMessage()
-			if err != nil {
-				log.Println("read:", err)
-				return
-			}
-			// log.Printf("recv: %s", message)
-		}
-	}()
-
-	go polling(c)
+	go recv(c)
+	go send(c)
 	scan()
 }
 
@@ -54,13 +43,22 @@ func scan() {
 	}
 }
 
-func polling(c *websocket.Conn) {
+func recv(c *websocket.Conn) {
+
+	for {
+		_, _message, err := c.ReadMessage()
+		if err != nil {
+			log.Println("read:", err)
+			return
+		}
+		log.Printf("recv: %s", _message)
+	}
+}
+
+func send(c *websocket.Conn) {
 
 	_done := make(chan struct{})
 	defer close(_done)
-
-	_ticker := time.NewTicker(time.Second)
-	defer _ticker.Stop()
 
 	_interrupt := make(chan os.Signal, 1)
 	signal.Notify(_interrupt, os.Interrupt)
@@ -73,13 +71,6 @@ func polling(c *websocket.Conn) {
 		case msg := <-_msg:
 			err := c.WriteMessage(websocket.TextMessage,
 					      []byte(msg))
-			if err != nil {
-				log.Println("write:", err)
-				return
-			}
-		case <-_ticker.C:
-			err := c.WriteMessage(websocket.TextMessage,
-					      []byte("Hello world"))
 			if err != nil {
 				log.Println("write:", err)
 				return
