@@ -1,77 +1,162 @@
 package main
 
 import (
-	"flag"
-	"log"
+	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/gorilla/websocket"
+	"github.com/satori/go.uuid"
 )
 
-var addr = flag.String("addr", "localhost:8080", "http service address")
-var _upgrader_0 = websocket.Upgrader{}
-var _upgrader_1 = websocket.Upgrader{}
-var _msg_0 = make(chan string)
-var _msg_1 = make(chan string)
-var _conn_0 *websocket.Conn
-var _conn_1 *websocket.Conn
-var _id int = 0
+type ClientManager struct {
 
-func chat_0(w http.ResponseWriter, r *http.Request) {
-
-	_conn_0, err := _upgrader_0.Upgrade(w, r, nil)
-	if (err_handle(err)) { return }
-	defer _conn_0.Close()
-
-	go read(_conn_0, _msg_0)
-	dispatch(_conn_0, _msg_0)
+	clients map[*Client]bool
+	broadcast chan []byte
+	register chan *Client
+	unregister chan *Client
 }
 
-func chat_1(w http.ResponseWriter, r *http.Request) {
+type Client struct {
 
-	_conn_1, err := _upgrader_1.Upgrade(w, r, nil)
-	if (err_handle(err)) { return }
-	defer _conn_1.Close()
-
-	go read(_conn_1, _msg_1)
-	dispatch(_conn_1, _msg_1)
+	id string
+	socket *websocket.Conn
+	send chan []byte
 }
 
-func read(conn *websocket.Conn, chnl chan string) {
+type Message struct {
+	Sender    string `json:"sender,omitempty"`
+	Recipient string `json:"recipient,omitempty"`
+	Content   string `json:"content,omitempty"`
+}
+
+var manager = ClientManager{
+	broadcast:  make(chan []byte),
+	register:   make(chan *Client),
+	unregister: make(chan *Client),
+	clients:    make(map[*Client]bool),
+}
+
+func (manager *ClientManager) start() {
 
 	for {
 
-		_, _msg, err := conn.ReadMessage()
-		if (err_handle(err)) { break }
-		log.Println("[RECV]\t\t", _msg)
-		chnl <- string(_msg)
+		select {
+		case conn := <-manager.register:
+
+			manager.clients[conn] = true
+			jsonMessage, _ := json.Marshal(&Message{Content: "/A new socket has connected."})
+			manager.send(jsonMessage, conn)
+
+		case conn := <-manager.unregister:
+
+			if _, ok := manager.clients[conn]; ok {
+				close(conn.send)
+				delete(manager.clients, conn)
+				jsonMessage, _ := json.Marshal(&Message{Content: "/A socket has disconnected."})
+				manager.send(jsonMessage, conn)
+			}
+
+		case message := <-manager.broadcast:
+
+			for conn := range manager.clients {
+				select {
+
+				case conn.send <- message:
+
+				default:
+
+					close(conn.send)
+					delete(manager.clients, conn)
+
+				}
+			}
+		}
 	}
 }
 
-func dispatch(conn *websocket.Conn, chnl chan string) {
+func (manager *ClientManager) send(message []byte, ignore *Client) {
+
+	for conn := range manager.clients {
+
+		if conn != ignore {
+
+			conn.send <- message
+		}
+	}
+}
+
+func (c *Client) read() {
+
+	defer func() {
+
+		manager.unregister <- c
+		c.socket.Close()
+	}()
 
 	for {
-		err := conn.WriteMessage(websocket.TextMessage, []byte(<-chnl))
-		log.Println("[SEND]")
-		if (err_handle(err)) { break }
+
+		_, message, err := c.socket.ReadMessage()
+
+		if err != nil {
+
+			manager.unregister <- c
+			c.socket.Close()
+			break
+		}
+
+		jsonMessage, _ := json.Marshal(&Message{Sender: c.id, Content: string(message)})
+		manager.broadcast <- jsonMessage
 	}
 }
 
-func err_handle(err error) bool {
+func (c *Client) write() {
 
-	if (err != nil) {
+	defer func() {
 
-		log.Println("[ERROR]\t\t", err)
-		return true;
+		c.socket.Close()
+	}()
+
+	for {
+
+		select {
+
+		case message, ok := <-c.send:
+
+			if !ok {
+
+				c.socket.WriteMessage(websocket.CloseMessage, []byte{})
+				return
+			}
+
+			c.socket.WriteMessage(websocket.TextMessage, message)
+		}
 	}
-	return false
 }
 
 func main() {
 
-	flag.Parse()
-	log.SetFlags(0)
-	http.HandleFunc("/chat_0", chat_0)
-	http.HandleFunc("/chat_1", chat_1)
-	log.Fatal(http.ListenAndServe(*addr, nil))
+	fmt.Println("Starting application...")
+
+	go manager.start()
+
+	http.HandleFunc("/ws", wsHandler)
+	http.ListenAndServe(":8011", nil)
+}
+
+func wsHandler(res http.ResponseWriter, req *http.Request) {
+
+	conn, err := (&websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}).Upgrade(res, req, nil)
+
+	if err != nil {
+
+		http.NotFound(res, req)
+		return
+	}
+
+	client := &Client{id: uuid.Must(uuid.NewV4(), nil).String(), socket: conn, send: make(chan []byte)}
+	manager.register <- client
+
+	go client.read()
+	go client.write()
 }
