@@ -7,11 +7,14 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
 
 var addr = flag.String("addr", "localhost:8011", "http service address")
+var debug = flag.Bool("debug", false, "is debug mode")
+var sensitive = []string{ "fuck", "shit" }
 
 type Client struct {
 
@@ -20,6 +23,18 @@ type Client struct {
 	recv		chan string
 	send		chan string
 	interrupt	chan os.Signal
+}
+
+func mask(list []string, msg string) string {
+
+	for _, s := range list {
+
+		if r := strings.Index(msg, s); r != -1 {
+
+			return msg[0:r]+ strings.Repeat("*", len(s))+ msg[r+len(s):]
+		}
+	}
+	return msg
 }
 
 func err_detect(err error, msg string) bool {
@@ -39,7 +54,7 @@ func (client *Client) connect(endpoint string) {
 	conn, _, err	:= websocket.DefaultDialer.Dial(client.url, nil)
 	if err_detect(err, "connect error") { return; }
 	client.conn		= conn
-	log.Println("[CONN]\t", client.url)
+	if *debug { log.Println("[CONN]\t", client.url) }
 }
 
 func (client *Client) scan() {
@@ -50,7 +65,7 @@ func (client *Client) scan() {
 		_, err := fmt.Scanln(&input)
 		if err_detect(err, "scan error") { return; }
 		client.send <- input
-		log.Println("[SCAN]\t", input)
+		if *debug { log.Println("[SCAN]\t", input) }
 	}
 }
 
@@ -64,6 +79,7 @@ func (client *Client) write() {
 
 			err := client.conn.WriteMessage(websocket.TextMessage,[]byte(msg))
 			if err_detect(err, "write error") { return; }
+			if *debug { log.Println("[WRITE]\t", msg) }
 
 		case <-client.interrupt:
 
@@ -86,7 +102,7 @@ func (client *Client) read() {
 		_, msg, err := client.conn.ReadMessage()
 		if err_detect(err, "read error") { return; }
 		client.recv <- string(msg)
-		log.Println("[READ]\t", msg)
+		if *debug { log.Println("[READ]\t", string(msg)) }
 	}
 }
 
@@ -97,9 +113,10 @@ func (client *Client) show() {
 		select {
 		case msg := <-client.recv:
 
+			msg = mask(sensitive, msg)
 			_, err := fmt.Println(msg)
 			if err_detect(err, "show error") { return; }
-			log.Println("[SHOW]\t", msg)
+			if *debug { log.Println("[SHOW]\t", msg) }
 		}
 	}
 }
@@ -108,6 +125,7 @@ func main() {
 
 	flag.Parse()
 	log.SetFlags(0)
+	if *debug { log.Println("In debug mode\n") }
 
 	client := Client {
 
