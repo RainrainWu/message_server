@@ -90,6 +90,7 @@ func (client *Client) write() {
 											""))
 			if err_detect(err, "interrupt error") { return; }
 			client.conn.Close()
+			os.Exit(1)
 			return
 		}
 	}

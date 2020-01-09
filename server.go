@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 	"github.com/satori/go.uuid"
@@ -19,9 +20,10 @@ type ClientManager struct {
 
 type Client struct {
 
-	id string
-	socket *websocket.Conn
-	send chan []byte
+	id		string
+	violate	int
+	socket	*websocket.Conn
+	send	chan []byte
 }
 
 type Message struct {
@@ -35,6 +37,20 @@ var manager = ClientManager{
 	register:   make(chan *Client),
 	unregister: make(chan *Client),
 	clients:    make(map[*Client]bool),
+}
+
+var sensitive = []string{ "fuck", "shit" }
+
+func detect(list []string, msg string) bool {
+
+	for _, s := range list {
+
+		if r := strings.Index(msg, s); r != -1 {
+
+			return true
+		}
+	}
+	return false
 }
 
 func (manager *ClientManager) start() {
@@ -105,8 +121,16 @@ func (c *Client) read() {
 			break
 		}
 
-		jsonMessage, _ := json.Marshal(&Message{Sender: c.id, Content: string(message)})
-		manager.broadcast <- jsonMessage
+		if detect(sensitive, string(message)) { c.violate += 1 }
+
+		if c.violate > 3 {
+
+			c.send <- []byte("surprise! 30 days banned!")
+		} else {
+
+			jsonMessage, _ := json.Marshal(&Message{Sender: c.id, Content: string(message)})
+			manager.broadcast <- jsonMessage
+		}
 	}
 }
 
@@ -154,7 +178,13 @@ func wsHandler(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	client := &Client{id: uuid.Must(uuid.NewV4(), nil).String(), socket: conn, send: make(chan []byte)}
+	client := &Client{
+
+		id:			uuid.Must(uuid.NewV4(), nil).String(),
+		violate:	0,
+		socket:		conn,
+		send:		make(chan []byte),
+	}
 	manager.register <- client
 
 	go client.read()
